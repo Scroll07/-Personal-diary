@@ -4,13 +4,41 @@ import asyncio
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
-from config import BOT_TOKEN
+import os
+from config import BOT_TOKEN, MY_ID
 
 BASE_DIR = Path(__file__).resolve().parent
 DB = BASE_DIR / 'diary.db'
+BACKUP_DIR = BASE_DIR / 'backups'
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
 db = sqlite3.connect(DB)
 cursor = db.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    text TEXT,
+    date TEXT
+)
+''')
+db.commit()
+
+async def backup_db(update: Update, context):
+    user_id = update.effective_user.id
+    if user_id == MY_ID:
+        try:
+            backup_file = BACKUP_DIR / f'diary_{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.db'
+            with sqlite3.connect(backup_file) as target_db:
+                db.backup(target_db)
+            await update.message.reply_text(f'База данных сохранена в {backup_file}')
+        except Exception as e:
+            await update.message.reply_text(f'Ошибка при сохранении базы данных {e}')
+    else:
+        await update.message.reply_text('Вы не являетесь администратором!')
+
+async def self_greeting(bot):
+    await bot.send_message(chat_id=MY_ID, text='Бот запущен!')
 
 async def add(update: Update, context):
     text = ' '.join(context.args)
@@ -29,7 +57,7 @@ async def add(update: Update, context):
 async def get(update: Update, context):
     user_id = update.effective_user.id
     try:
-        cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC', (user_id,))
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC LIMIT 10', (user_id,))
         entries = cursor.fetchall()
         if not entries:
             await update.message.reply_text('Записей не найдено.')
@@ -69,8 +97,6 @@ async def delete(update: Update, context):
         await context.bot.send_message(chat_id=user_id, text=f'Удалить запись [{num}]?', reply_markup=reply_markup)
     except Exception as e:
         await context.bot.send_message(chat_id=user_id, text=f'Ошибка при удалении {e}')
-
-
 
 async def button(update: Update, context):
     query = update.callback_query
@@ -129,16 +155,16 @@ async def main():
     application.add_handler(CommandHandler('add', add))
     application.add_handler(CommandHandler('get', get))
     application.add_handler(CommandHandler('del', delete))
+    application.add_handler(CommandHandler('backup', backup_db))
     
     application.add_handler(CallbackQueryHandler(button))
+
+    await self_greeting(application.bot)
 
     await application.initialize()
     await application.start()
     await application.updater.start_polling()
     await asyncio.Event().wait()
-
-
-
 
 if __name__ == '__main__':
     asyncio.run(main())

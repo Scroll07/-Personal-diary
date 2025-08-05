@@ -11,7 +11,7 @@ dist/
 pas.exe.spec
 *.db
 config.py
-
+backups/* 
 
 
 
