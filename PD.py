@@ -98,6 +98,36 @@ async def delete(update: Update, context):
     except Exception as e:
         await context.bot.send_message(chat_id=user_id, text=f'Ошибка при удалении {e}')
 
+async def edit(update: Update, context):
+    try:
+        args = context.args
+        user_id = update.effective_user.id
+        if len(args) < 2:
+            await context.bot.send_message(chat_id=user_id, text='Укажите номер записи и измененный текст после /edit (Например /edit 3 <измененный текст>)')
+            return
+        num = args[0]
+        new_text = ' '.join(args[1:])
+        if not num.isdigit():
+            await context.bot.send_message(chat_id=user_id, text='Укажите номер записи и измененный текст после /edit (Например /edit 3 <измененный текст>)')
+            return
+        num = int(num)
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC', (user_id,))
+        entries = cursor.fetchall()
+        if num < 1 or num > len(entries):
+            await context.bot.send_message(chat_id=user_id, text='Неверный номер записи.')
+            return
+        record_id = entries[num-1][0]
+        cursor.execute('UPDATE entries SET text = ? WHERE id = ? AND user_id = ?', (new_text, record_id, user_id))
+        db.commit()
+        await context.bot.send_message(chat_id=user_id, text=f'Запись [{num}] изменена.')
+    except Exception as e:
+        await context.bot.send_message(chat_id=user_id, text=f'Ошибка при изменении {e}')
+
+
+
+
+
+
 async def button(update: Update, context):
     query = update.callback_query
     await query.answer()
@@ -156,6 +186,7 @@ async def main():
     application.add_handler(CommandHandler('get', get))
     application.add_handler(CommandHandler('del', delete))
     application.add_handler(CommandHandler('backup', backup_db))
+    application.add_handler(CommandHandler('edit', edit))
     
     application.add_handler(CallbackQueryHandler(button))
 
