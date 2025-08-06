@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     text TEXT,
-    date TEXT
+    date TEXT,
+    pinned INTEGER DEFAULT 0
 )
 ''')
 db.commit()
@@ -57,12 +58,21 @@ async def add(update: Update, context):
 async def get(update: Update, context):
     user_id = update.effective_user.id
     try:
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? AND pinned = 1 ORDER BY date DESC', (user_id,))
+        pinned_entries = cursor.fetchall()
         cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC LIMIT 10', (user_id,))
-        entries = cursor.fetchall()
-        if not entries:
+        regular_entries = cursor.fetchall()
+        if not regular_entries and not pinned_entries:
             await update.message.reply_text('Записей не найдено.')
             return
-        result = '\n'.join([f'[{num}] Дата {entry[3]} [{num}]\nЗапись: {entry[2]}\n' for num, entry in enumerate(entries, start=1)])
+        result = ''
+        if pinned_entries:
+            result+= '📌 Закреплённые записи📌\n'
+            result+= '\n'.join([f'[{num}] Дата {entry[3]} [{num}]\nЗапись: {entry[2]}\n' for num, entry in enumerate(pinned_entries, start=1)])
+            result+= '\n\n'
+        if regular_entries:
+            result+= 'Обычные записи (последние 10):\n'
+            result+= '\n'.join([f'[{num}] Дата {entry[3]} [{num}]\nЗапись: {entry[2]}\n' for num, entry in enumerate(regular_entries, start=1)])
         await update.message.reply_text(result)
     except Exception as e:
         update.message.reply_text(f'Ошибка базы данных {e}')
@@ -123,10 +133,22 @@ async def edit(update: Update, context):
     except Exception as e:
         await context.bot.send_message(chat_id=user_id, text=f'Ошибка при изменении {e}')
 
-
-
-
-
+async def search(update: Update, context):
+    try:
+        user_id = update.effective_user.id
+        text = ' '.join(context.args)
+        if not text:
+            await context.bot.send_message(chat_id=user_id, text='Укажите текст для поиска после /search')
+            return
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? AND text LIKE ? ORDER BY date DESC', (user_id, f'%{text}%'))
+        entries = cursor.fetchall()
+        if not entries:
+            await context.bot.send_message(chat_id=user_id, text=f'Записей с текстом "{text}" не найдено.')
+            return
+        result = '\n'.join([f'[{num}] Дата {entry[3]} [{num}]\nЗапись: {entry[2]}\n' for num, entry in enumerate(entries, start=1)])
+        await context.bot.send_message(chat_id=user_id, text=result)
+    except Exception as e:
+        await context.bot.send_message(chat_id=user_id, text=f'Ошибка при поиске {e}')
 
 async def button(update: Update, context):
     query = update.callback_query
@@ -150,27 +172,68 @@ async def button(update: Update, context):
     elif data == 'del_no':
         await query.edit_message_text(text='Отмена удаления.', reply_markup=None)
 
+async def pin(update: Update, context):
+    try:
+        user_id = update.effective_user.id
+        args = context.args
+        if len(args) < 1 or not args[0].isdigit():
+            await context.bot.send_message(chat_id=user_id, text='Укажите номер записи после /pin (Например /pin 3)')
+            return
+        num = int(args[0])
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC', (user_id,))
+        entries = cursor.fetchall()
+        if num < 1 or num > len(entries):
+            await context.bot.send_message(chat_id=user_id, text='Неверный номер записи.')
+            return
+        record_id = entries[num-1][0]
+        cursor.execute('UPDATE entries SET pinned = 1 WHERE id = ? AND user_id = ?', (record_id, user_id))
+        db.commit()
+        await context.bot.send_message(chat_id=user_id, text=f'Запись [{num}] закреплена 📌.')
+    except Exception as e:
+        await context.bot.send_message(chat_id=user_id, text=f'Ошибка при закреплении {e}')
+
+async def unpin(update: Update, context):
+    try:
+        user_id = update.effective_user.id
+        args = context.args
+        if len(args) < 1 or not args[0].isdigit():
+            await context.bot.send_message(chat_id=user_id, text='Укажите номер записи после /unpin (Например /unpin 3)')
+            return
+        num = int(args[0])
+        cursor.execute('SELECT * FROM entries WHERE user_id = ? ORDER BY date DESC', (user_id,))
+        entries = cursor.fetchall()
+        if num < 1 or num > len(entries):
+            await context.bot.send_message(chat_id=user_id, text='Неверный номер записи.')
+            return
+        record_id = entries[num-1][0]
+        cursor.execute('UPDATE entries SET pinned = 0 WHERE id = ? AND user_id = ?', (record_id, user_id))
+        db.commit()
+        await context.bot.send_message(chat_id=user_id, text=f'Запись [{num}] откреплена.')
+    except Exception as e:
+        await context.bot.send_message(chat_id=user_id, text=f'Ошибка при закреплении {e}')
+
+async def help_command(update, context):
+    user_id = update.effective_user.id
+    text='''
+📔 **Помощь по боту-дневнику**
+
+Вот доступные команды:
+- /add <текст> — Добавить новую запись в дневник.
+- /get — Показать последние записи (закреплённые сверху).
+- /edit <номер> <новый текст> — Изменить текст записи по номеру.
+- /del <номер> или /del all — Удалить запись по номеру или все (с подтверждением).
+- /search <текст> — Найти записи по ключевому слову.
+- /pin <номер> — Закрепить запись (показывается сверху в /get).
+- /unpin <номер> — Открепить запись.
+- /backup — Создать бэкап базы данных (только для админа).
+
+'''
+    await context.bot.send_message(chat_id=user_id, text=text.strip())
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-#cursor.execute('''
-#CREATE TABLE IF NOT EXISTS entries (
- #   id INTEGER PRIMARY KEY AUTOINCREMENT,
- #   user_id INTEGER,
- #   text TEXT,
- #   date TEXT
-#''')
 
 
 
@@ -187,6 +250,10 @@ async def main():
     application.add_handler(CommandHandler('del', delete))
     application.add_handler(CommandHandler('backup', backup_db))
     application.add_handler(CommandHandler('edit', edit))
+    application.add_handler(CommandHandler('search', search))
+    application.add_handler(CommandHandler('pin', pin))
+    application.add_handler(CommandHandler('unpin', unpin))
+    application.add_handler(CommandHandler('help', help_command))
     
     application.add_handler(CallbackQueryHandler(button))
 
